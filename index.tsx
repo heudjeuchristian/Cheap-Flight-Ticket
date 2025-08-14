@@ -6,12 +6,18 @@ import { GoogleGenAI, Type } from "@google/genai";
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 const App = () => {
+  const [searchMode, setSearchMode] = useState<'find' | 'explore'>('find');
+  
+  // --- Find a Flight State ---
   const [departure, setDeparture] = useState('');
   const [arrival, setArrival] = useState('');
   const [departureDate, setDepartureDate] = useState('');
   const [returnDate, setReturnDate] = useState('');
   const [isRoundTrip, setIsRoundTrip] = useState(true);
-
+  const [summary, setSummary] = useState([]);
+  const [weeklyPrices, setWeeklyPrices] = useState([]);
+  const [returnWeeklyPrices, setReturnWeeklyPrices] = useState([]);
+  
   // Advanced Options State
   const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
   const [adults, setAdults] = useState(1);
@@ -21,12 +27,15 @@ const App = () => {
   const [stops, setStops] = useState('ANY');
   const [preferredAirlines, setPreferredAirlines] = useState('');
 
-  const [summary, setSummary] = useState([]);
-  const [weeklyPrices, setWeeklyPrices] = useState([]);
-  const [returnWeeklyPrices, setReturnWeeklyPrices] = useState([]);
+  // --- Explore Destinations State ---
+  const [travelPeriod, setTravelPeriod] = useState('');
+  const [maxBudget, setMaxBudget] = useState('1000');
+  const [interests, setInterests] = useState('');
+  const [destinations, setDestinations] = useState([]);
+
+  // --- Shared State ---
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-
   const [departureSuggestions, setDepartureSuggestions] = useState([]);
   const [arrivalSuggestions, setArrivalSuggestions] = useState([]);
   const [activeSuggestionBox, setActiveSuggestionBox] = useState<'departure' | 'arrival' | null>(null);
@@ -122,8 +131,17 @@ const App = () => {
     };
   }, []);
 
+  const handleModeChange = (mode: 'find' | 'explore') => {
+    setSearchMode(mode);
+    setError('');
+    // Clear all results
+    setSummary([]);
+    setWeeklyPrices([]);
+    setReturnWeeklyPrices([]);
+    setDestinations([]);
+  };
 
-  const handleSearch = async () => {
+  const handleFlightSearch = async () => {
     const requiredFields = [departure, arrival, departureDate];
     if (isRoundTrip) {
         requiredFields.push(returnDate);
@@ -138,6 +156,7 @@ const App = () => {
     setSummary([]);
     setWeeklyPrices([]);
     setReturnWeeklyPrices([]);
+    setDestinations([]);
 
     try {
       const schema = {
@@ -246,186 +265,300 @@ const App = () => {
       setLoading(false);
     }
   };
+
+  const handleExploreSearch = async () => {
+    if (!departure.trim() || !travelPeriod.trim() || !maxBudget.trim() || !interests.trim()) {
+        setError('Please fill in all fields to explore destinations.');
+        return;
+    }
+    setLoading(true);
+    setError('');
+    setDestinations([]);
+    setSummary([]);
+    setWeeklyPrices([]);
+    setReturnWeeklyPrices([]);
+
+    try {
+        const schema = {
+            type: Type.ARRAY,
+            items: {
+                type: Type.OBJECT,
+                properties: {
+                    city: { type: Type.STRING, description: "The name of the suggested city." },
+                    country: { type: Type.STRING, description: "The country where the city is located." },
+                    description: { type: Type.STRING, description: "A short, compelling description of the destination and why it's a good fit for the user's interests." },
+                    estimatedFlightPrice: { type: Type.NUMBER, description: "An estimated round-trip flight price from the user's departure location, in USD." },
+                    activities: {
+                        type: Type.ARRAY,
+                        description: "A list of 3-4 top activities or attractions in the destination.",
+                        items: { type: Type.STRING }
+                    }
+                },
+                required: ["city", "country", "description", "estimatedFlightPrice", "activities"]
+            }
+        };
+
+        const prompt = `I want to travel from ${departure}. I'm thinking of going sometime around ${travelPeriod}. My maximum budget for a round-trip flight is around $${maxBudget}. I'm interested in activities related to: ${interests}. Please suggest 3 to 4 destinations for me. For each destination, provide the city, country, a short, compelling description of why it's a great fit for my interests, an estimated round-trip flight price, and a list of 3 top activities.`;
+
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: schema,
+            },
+        });
+
+        try {
+            const data = JSON.parse(response.text);
+            setDestinations(data || []);
+        } catch (parseError) {
+            console.error("Failed to parse JSON response:", parseError, "Response text:", response.text);
+            setError("There was an issue processing the destination data. The format was unexpected.");
+            setDestinations([]);
+        }
+
+    } catch (e) {
+        console.error(e);
+        setError('Sorry, an error occurred while finding destinations. Please check your connection or API key and try again.');
+    } finally {
+        setLoading(false);
+    }
+  };
   
   const handleKeyPress = (e) => {
-    if (e.key === 'Enter' && !isSearchDisabled) {
-      handleSearch();
+    if (e.key === 'Enter') {
+      if(searchMode === 'find' && !isFlightSearchDisabled) handleFlightSearch();
+      if(searchMode === 'explore' && !isExploreSearchDisabled) handleExploreSearch();
     }
   };
 
-  const isSearchDisabled = loading || !departure.trim() || !arrival.trim() || !departureDate.trim() || (isRoundTrip && !returnDate.trim());
+  const isFlightSearchDisabled = loading || !departure.trim() || !arrival.trim() || !departureDate.trim() || (isRoundTrip && !returnDate.trim());
+  const isExploreSearchDisabled = loading || !departure.trim() || !travelPeriod.trim() || !maxBudget.trim() || !interests.trim();
 
   return (
     <main className="container">
       <header>
-        <h1>✈️ Flight Price Finder</h1>
-        <p>Enter your trip details below to find the best flight deals.</p>
+        <h1>✈️ Flight Finder & Explorer</h1>
+        <p>{searchMode === 'find' ? 'Enter your trip details below to find the best flight deals.' : 'Tell us your travel style and let us find your next adventure.'}</p>
       </header>
 
       <div className="content-wrapper">
         <div className="search-panel">
             <div className="search-container">
-                <div className="search-grid">
-                    <div className="form-group grid-col-span-2">
-                        <div className="toggle-group">
-                        <input 
-                            type="checkbox"
-                            id="round-trip-toggle"
-                            checked={isRoundTrip}
-                            onChange={(e) => {
-                                const checked = e.target.checked;
-                                setIsRoundTrip(checked);
-                                if(!checked) {
-                                setReturnDate('');
-                                }
-                            }}
-                        />
-                        <label htmlFor="round-trip-toggle">Round-trip</label>
-                        </div>
-                    </div>
-
-                    <div className="form-group suggestion-wrapper">
-                        <label htmlFor="departure-loc">From</label>
-                        <input
-                        id="departure-loc"
-                        type="text"
-                        value={departure}
-                        onChange={(e) => handleInputChange(e.target.value, 'departure')}
-                        onKeyPress={handleKeyPress}
-                        placeholder="e.g., New York, USA"
-                        aria-label="Departure Location"
-                        autoComplete="off"
-                        disabled={loading}
-                        />
-                         {activeSuggestionBox === 'departure' && departureSuggestions.length > 0 && (
-                            <ul className="suggestion-list">
-                                {departureSuggestions.map((s, i) => (
-                                    <li key={i} className="suggestion-item" onClick={() => handleSuggestionClick(s, 'departure')}>
-                                        <strong>{s.iata}</strong> - {s.name}, {s.location}
-                                    </li>
-                                ))}
-                            </ul>
-                        )}
-                    </div>
-                    <div className="form-group suggestion-wrapper">
-                        <label htmlFor="arrival-loc">To</label>
-                        <input
-                        id="arrival-loc"
-                        type="text"
-                        value={arrival}
-                        onChange={(e) => handleInputChange(e.target.value, 'arrival')}
-                        onKeyPress={handleKeyPress}
-                        placeholder="e.g., Paris, France"
-                        aria-label="Arrival Destination"
-                        autoComplete="off"
-                        disabled={loading}
-                        />
-                         {activeSuggestionBox === 'arrival' && arrivalSuggestions.length > 0 && (
-                            <ul className="suggestion-list">
-                                {arrivalSuggestions.map((s, i) => (
-                                    <li key={i} className="suggestion-item" onClick={() => handleSuggestionClick(s, 'arrival')}>
-                                        <strong>{s.iata}</strong> - {s.name}, {s.location}
-                                    </li>
-                                ))}
-                            </ul>
-                        )}
-                    </div>
-                    <div className="form-group">
-                        <label htmlFor="departure-date">Depart</label>
-                        <input
-                        id="departure-date"
-                        type="date"
-                        value={departureDate}
-                        onChange={(e) => setDepartureDate(e.target.value)}
-                        onKeyPress={handleKeyPress}
-                        aria-label="Departure Date"
-                        disabled={loading}
-                        />
-                    </div>
-                    <div className="form-group">
-                        <label htmlFor="return-date">Return</label>
-                        <input
-                        id="return-date"
-                        type="date"
-                        value={returnDate}
-                        onChange={(e) => setReturnDate(e.target.value)}
-                        onKeyPress={handleKeyPress}
-                        aria-label="Return Date"
-                        disabled={loading || !isRoundTrip}
-                        />
-                    </div>
+                <div className="mode-toggle">
+                    <button onClick={() => handleModeChange('find')} className={searchMode === 'find' ? 'active' : ''} disabled={loading}>Find a Flight</button>
+                    <button onClick={() => handleModeChange('explore')} className={searchMode === 'explore' ? 'active' : ''} disabled={loading}>Explore Destinations</button>
                 </div>
-                
-                <div className="advanced-options-container">
-                    <div className="advanced-options-toggle">
-                        <a href="#" onClick={(e) => { e.preventDefault(); setShowAdvancedOptions(!showAdvancedOptions); }}>
-                            {showAdvancedOptions ? 'Hide' : 'Show'} Advanced Options
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={`chevron-icon ${showAdvancedOptions ? 'rotated' : ''}`}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
-                            </svg>
-                        </a>
-                    </div>
 
-                    {showAdvancedOptions && (
-                        <div className="advanced-options">
-                            <div className="advanced-options-grid">
-                                <div className="form-group traveler-input">
-                                    <label htmlFor="adults">Adults</label>
-                                    <input id="adults" type="number" min="1" max="9" value={adults} onChange={(e) => setAdults(parseInt(e.target.value, 10))} disabled={loading} />
-                                </div>
-                                <div className="form-group traveler-input">
-                                    <label htmlFor="children">Children</label>
-                                    <input id="children" type="number" min="0" max="9" value={children} onChange={(e) => setChildren(parseInt(e.target.value, 10))} disabled={loading} />
-                                </div>
-                                <div className="form-group traveler-input">
-                                    <label htmlFor="infants">Infants</label>
-                                    <input id="infants" type="number" min="0" max="9" value={infants} onChange={(e) => setInfants(parseInt(e.target.value, 10))} disabled={loading} />
-                                </div>
-                                <div className="form-group cabin-class-input">
-                                    <label htmlFor="cabin-class">Cabin Class</label>
-                                    <select id="cabin-class" value={cabinClass} onChange={(e) => setCabinClass(e.target.value)} disabled={loading}>
-                                        <option value="ECONOMY">Economy</option>
-                                        <option value="PREMIUM_ECONOMY">Premium Economy</option>
-                                        <option value="BUSINESS">Business</option>
-                                        <option value="FIRST">First</option>
-                                    </select>
-                                </div>
-                                <div className="form-group stops-input">
-                                    <label htmlFor="stops">Stops</label>
-                                    <select id="stops" value={stops} onChange={(e) => setStops(e.target.value)} disabled={loading}>
-                                        <option value="ANY">Any</option>
-                                        <option value="NON_STOP">Non-stop</option>
-                                        <option value="ONE_STOP">1 Stop</option>
-                                        <option value="TWO_PLUS_STOPS">2+ Stops</option>
-                                    </select>
-                                </div>
-                                <div className="form-group airlines-input">
-                                    <label htmlFor="preferred-airlines">Preferred Airlines (optional)</label>
-                                    <input id="preferred-airlines" type="text" value={preferredAirlines} onChange={(e) => setPreferredAirlines(e.target.value)} placeholder="e.g., Delta, United" disabled={loading} />
+                {searchMode === 'find' ? (
+                    <>
+                        <div className="search-grid">
+                            <div className="form-group grid-col-span-2">
+                                <div className="toggle-group">
+                                <input 
+                                    type="checkbox"
+                                    id="round-trip-toggle"
+                                    checked={isRoundTrip}
+                                    onChange={(e) => {
+                                        const checked = e.target.checked;
+                                        setIsRoundTrip(checked);
+                                        if(!checked) {
+                                        setReturnDate('');
+                                        }
+                                    }}
+                                />
+                                <label htmlFor="round-trip-toggle">Round-trip</label>
                                 </div>
                             </div>
-                        </div>
-                    )}
-                </div>
 
-                <button onClick={handleSearch} disabled={isSearchDisabled} className="search-button">
-                {loading ? 'Searching...' : 'Find Flights'}
-                </button>
+                            <div className="form-group suggestion-wrapper">
+                                <label htmlFor="departure-loc">From</label>
+                                <input
+                                id="departure-loc"
+                                type="text"
+                                value={departure}
+                                onChange={(e) => handleInputChange(e.target.value, 'departure')}
+                                onKeyPress={handleKeyPress}
+                                placeholder="e.g., New York, USA"
+                                aria-label="Departure Location"
+                                autoComplete="off"
+                                disabled={loading}
+                                />
+                                {activeSuggestionBox === 'departure' && departureSuggestions.length > 0 && (
+                                    <ul className="suggestion-list">
+                                        {departureSuggestions.map((s, i) => (
+                                            <li key={i} className="suggestion-item" onClick={() => handleSuggestionClick(s, 'departure')}>
+                                                <strong>{s.iata}</strong> - {s.name}, {s.location}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                )}
+                            </div>
+                            <div className="form-group suggestion-wrapper">
+                                <label htmlFor="arrival-loc">To</label>
+                                <input
+                                id="arrival-loc"
+                                type="text"
+                                value={arrival}
+                                onChange={(e) => handleInputChange(e.target.value, 'arrival')}
+                                onKeyPress={handleKeyPress}
+                                placeholder="e.g., Paris, France"
+                                aria-label="Arrival Destination"
+                                autoComplete="off"
+                                disabled={loading}
+                                />
+                                {activeSuggestionBox === 'arrival' && arrivalSuggestions.length > 0 && (
+                                    <ul className="suggestion-list">
+                                        {arrivalSuggestions.map((s, i) => (
+                                            <li key={i} className="suggestion-item" onClick={() => handleSuggestionClick(s, 'arrival')}>
+                                                <strong>{s.iata}</strong> - {s.name}, {s.location}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                )}
+                            </div>
+                            <div className="form-group">
+                                <label htmlFor="departure-date">Depart</label>
+                                <input
+                                id="departure-date"
+                                type="date"
+                                value={departureDate}
+                                onChange={(e) => setDepartureDate(e.target.value)}
+                                onKeyPress={handleKeyPress}
+                                aria-label="Departure Date"
+                                disabled={loading}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label htmlFor="return-date">Return</label>
+                                <input
+                                id="return-date"
+                                type="date"
+                                value={returnDate}
+                                onChange={(e) => setReturnDate(e.target.value)}
+                                onKeyPress={handleKeyPress}
+                                aria-label="Return Date"
+                                disabled={loading || !isRoundTrip}
+                                />
+                            </div>
+                        </div>
+                        
+                        <div className="advanced-options-container">
+                            <div className="advanced-options-toggle">
+                                <a href="#" onClick={(e) => { e.preventDefault(); setShowAdvancedOptions(!showAdvancedOptions); }}>
+                                    {showAdvancedOptions ? 'Hide' : 'Show'} Advanced Options
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={`chevron-icon ${showAdvancedOptions ? 'rotated' : ''}`}>
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+                                    </svg>
+                                </a>
+                            </div>
+
+                            {showAdvancedOptions && (
+                                <div className="advanced-options">
+                                    <div className="advanced-options-grid">
+                                        <div className="form-group traveler-input">
+                                            <label htmlFor="adults">Adults</label>
+                                            <input id="adults" type="number" min="1" max="9" value={adults} onChange={(e) => setAdults(parseInt(e.target.value, 10))} disabled={loading} />
+                                        </div>
+                                        <div className="form-group traveler-input">
+                                            <label htmlFor="children">Children</label>
+                                            <input id="children" type="number" min="0" max="9" value={children} onChange={(e) => setChildren(parseInt(e.target.value, 10))} disabled={loading} />
+                                        </div>
+                                        <div className="form-group traveler-input">
+                                            <label htmlFor="infants">Infants</label>
+                                            <input id="infants" type="number" min="0" max="9" value={infants} onChange={(e) => setInfants(parseInt(e.target.value, 10))} disabled={loading} />
+                                        </div>
+                                        <div className="form-group cabin-class-input">
+                                            <label htmlFor="cabin-class">Cabin Class</label>
+                                            <select id="cabin-class" value={cabinClass} onChange={(e) => setCabinClass(e.target.value)} disabled={loading}>
+                                                <option value="ECONOMY">Economy</option>
+                                                <option value="PREMIUM_ECONOMY">Premium Economy</option>
+                                                <option value="BUSINESS">Business</option>
+                                                <option value="FIRST">First</option>
+                                            </select>
+                                        </div>
+                                        <div className="form-group stops-input">
+                                            <label htmlFor="stops">Stops</label>
+                                            <select id="stops" value={stops} onChange={(e) => setStops(e.target.value)} disabled={loading}>
+                                                <option value="ANY">Any</option>
+                                                <option value="NON_STOP">Non-stop</option>
+                                                <option value="ONE_STOP">1 Stop</option>
+                                                <option value="TWO_PLUS_STOPS">2+ Stops</option>
+                                            </select>
+                                        </div>
+                                        <div className="form-group airlines-input">
+                                            <label htmlFor="preferred-airlines">Preferred Airlines (optional)</label>
+                                            <input id="preferred-airlines" type="text" value={preferredAirlines} onChange={(e) => setPreferredAirlines(e.target.value)} placeholder="e.g., Delta, United" disabled={loading} />
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        <button onClick={handleFlightSearch} disabled={isFlightSearchDisabled} className="search-button">
+                        {loading ? 'Searching...' : 'Find Flights'}
+                        </button>
+                    </>
+                ) : (
+                    <>
+                        <div className="search-grid-explore">
+                            <div className="form-group suggestion-wrapper">
+                                <label htmlFor="explore-departure-loc">From</label>
+                                <input
+                                id="explore-departure-loc"
+                                type="text"
+                                value={departure}
+                                onChange={(e) => handleInputChange(e.target.value, 'departure')}
+                                onKeyPress={handleKeyPress}
+                                placeholder="e.g., New York, USA"
+                                aria-label="Departure Location"
+                                autoComplete="off"
+                                disabled={loading}
+                                />
+                                {activeSuggestionBox === 'departure' && departureSuggestions.length > 0 && (
+                                    <ul className="suggestion-list">
+                                        {departureSuggestions.map((s, i) => (
+                                            <li key={i} className="suggestion-item" onClick={() => handleSuggestionClick(s, 'departure')}>
+                                                <strong>{s.iata}</strong> - {s.name}, {s.location}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                )}
+                            </div>
+                            <div className="form-group">
+                                <label htmlFor="travel-period">Travel Period</label>
+                                <input id="travel-period" type="text" value={travelPeriod} onChange={e => setTravelPeriod(e.target.value)} onKeyPress={handleKeyPress} placeholder="e.g., Next Summer, December" disabled={loading}/>
+                            </div>
+                            <div className="form-group">
+                                <label htmlFor="max-budget">Max Budget (USD)</label>
+                                <input id="max-budget" type="number" value={maxBudget} onChange={e => setMaxBudget(e.target.value)} onKeyPress={handleKeyPress} placeholder="e.g., 1000" disabled={loading}/>
+                            </div>
+                            <div className="form-group">
+                                <label htmlFor="interests">Interests</label>
+                                <input id="interests" type="text" value={interests} onChange={e => setInterests(e.target.value)} onKeyPress={handleKeyPress} placeholder="e.g., beaches, history, food" disabled={loading}/>
+                            </div>
+                        </div>
+                        <button onClick={handleExploreSearch} disabled={isExploreSearchDisabled} className="search-button">
+                            {loading ? 'Exploring...' : 'Find Destinations'}
+                        </button>
+                    </>
+                )}
             </div>
         </div>
 
-        {(loading || error || weeklyPrices.length > 0) && (
+        {(loading || error || weeklyPrices.length > 0 || destinations.length > 0) && (
             <div className="results-panel">
                 {error && <div className="error-message" role="alert">{error}</div>}
 
                 {loading && (
                     <div className="loader-container" aria-live="polite">
                         <div className="loader"></div>
-                        <p>Scanning the skies for the best deals...</p>
+                        <p>{searchMode === 'find' ? 'Scanning the skies for the best deals...' : 'Finding inspiring adventures for you...'}</p>
                     </div>
                 )}
                 
-                {weeklyPrices.length > 0 && !loading && (
+                {searchMode === 'find' && weeklyPrices.length > 0 && !loading && (
                     <div className="results-wrapper">
                     <section className="results-container" aria-labelledby="results-title">
                         <h2 id="results-title">
@@ -476,6 +609,38 @@ const App = () => {
                             </div>
                         </div>
                     )}
+                    </div>
+                )}
+
+                {searchMode === 'explore' && destinations.length > 0 && !loading && (
+                    <div className="results-wrapper">
+                        <section className="results-container" aria-labelledby="destinations-title">
+                            <h2 id="destinations-title">Your Next Adventure Awaits...</h2>
+                            <div className="destinations-grid">
+                                {destinations.map((dest, index) => (
+                                    <div key={index} className="destination-card">
+                                        <div className="card-header">
+                                            <h3>{dest.city}, {dest.country}</h3>
+                                            <div className="price-tag">~${dest.estimatedFlightPrice}</div>
+                                        </div>
+                                        <p className="description">{dest.description}</p>
+                                        <div className="activities">
+                                            <h4>Top Activities</h4>
+                                            <ul className="activities-list">
+                                                {dest.activities.map((activity, i) => (
+                                                    <li key={i}>
+                                                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="activity-icon">
+                                                            <path fillRule="evenodd" d="M16.704 4.153a.75.75 0 0 1 .143 1.052l-8 10.5a.75.75 0 0 1-1.127.075l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 0 1 1.05-.143Z" clipRule="evenodd" />
+                                                        </svg>
+                                                        {activity}
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </section>
                     </div>
                 )}
             </div>
