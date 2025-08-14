@@ -1,0 +1,6 @@
+{
+  "description": "A flight price finder that uses the Gemini API with Google Search to find the best flight deals for a given destination.",
+  "prompt": "",
+  "requestFramePermissions": [],
+  "name": "App"
+}
